@@ -6,6 +6,7 @@ Output/
 
 # commonly used as cmake build directory
 /build
+/build-FPR
 
 cscope.*
 *~
@@ -14,6 +15,7 @@ cscope.*
 *.sum
 *.out
 *.status
+.atom-beautify.*
 
 # In source build files
 docs/doxygen.cfg
