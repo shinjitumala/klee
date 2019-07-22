@@ -8,4 +8,4 @@ target_link_libraries(fpr-clap ${KLEE_LIBS})
 
 install(TARGETS fpr-clap RUNTIME DESTINATION bin)
 # The KLEE binary depends on the runtimes
-add_dependencies(klee BuildKLEERuntimes)
+add_dependencies(fpr-clap BuildKLEERuntimes)
