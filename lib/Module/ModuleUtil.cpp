@@ -347,7 +347,7 @@ bool klee::loadFile(const std::string &fileName, LLVMContext &context,
   if (magic == sys::fs::file_magic::bitcode) {
 #endif
     SMDiagnostic Err;
-    std::unique_ptr<llvm::Module> module(parseIR(Buffer, Err, context));
+    std::unique_ptr<llvm::Module> module(parseIR(Buffer, Err, context, false));
     if (!module) {
       klee_error("Loading file %s failed: %s", fileName.c_str(),
                  Err.getMessage().str().c_str());

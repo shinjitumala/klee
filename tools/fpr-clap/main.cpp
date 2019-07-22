@@ -604,8 +604,9 @@ int main(int argc, char **argv, char **envp) {
 	LLVMContext ctx;
 	std::vector<std::unique_ptr<llvm::Module> > loadedModules;
 	if (!klee::loadFile(InputFile, ctx, loadedModules, errorMsg)) {
-		klee_error("error loading program '%s': %s", InputFile.c_str(),
-		           errorMsg.c_str());
+        printf("Warning: Load file error: module\n");
+		//klee_error("error loading program '%s': %s", InputFile.c_str(),
+		  //         errorMsg.c_str());
 	}
 	// Load and link the whole files content. The assumption is that this is the
 	// application under test.
