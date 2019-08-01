@@ -83,6 +83,9 @@
 #include <sys/mman.h>
 #include <vector>
 
+#include <unistd.h>
+#include <sys/wait.h>
+
 using namespace llvm;
 using namespace klee;
 
@@ -1608,6 +1611,7 @@ Function* Executor::getTargetFunction(Value *calledVal, ExecutionState &state) {
 
 void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 	Instruction *i = ki->inst;
+	llvm::errs() << *i << "\n";
 	switch (i->getOpcode()) {
 	// Control flow
 	case Instruction::Ret: {
@@ -3087,7 +3091,7 @@ void Executor::terminateStateOnExit(ExecutionState &state) {
 	terminateState(state);
 
   // FPR
-  terminate_state_FPRCLAP_with_constraints(state);
+  FPRCLAP_terminate_state(state);
 }
 
 const InstructionInfo & Executor::getLastNonKleeInternalInstruction(const ExecutionState &state,
@@ -3208,6 +3212,9 @@ void Executor::callExternalFunction(ExecutionState &state,
                                     KInstruction *target,
                                     Function *function,
                                     std::vector< ref<Expr> > &arguments) {
+	// FPRCLAPに処理されるかを先に確認
+	if(FPRCLAP_check_sync(state, target, arguments)) return;
+
 	// check if specialFunctionHandler wants it
 	if (specialFunctionHandler->handle(state, function, target, arguments))
 		return;
@@ -4093,11 +4100,82 @@ Interpreter *Interpreter::create(LLVMContext &ctx, const InterpreterOptions &opt
 	return new Executor(ctx, opts, ih);
 }
 
-void Executor::terminate_state_FPRCLAP_with_constraints(ExecutionState &state){
+/**
+ * FPR Functions
+ */
+// 終了時に制約を出力
+void Executor::FPRCLAP_terminate_state(ExecutionState &state){
 	for(std::vector<ref<Expr> >::const_iterator cb = state.constraints.begin(),
 	    ce = state.constraints.end(); cb != ce; cb++) {
-    if(Expr *e = dyn_cast<Expr>(*cb)){
-      e->dump();
-    }
+		if(Expr *e = dyn_cast<Expr>(*cb)){
+		e->dump();
+		}
+	}
+}
+
+// FPRCLAPが注目したい関数呼び出しがあるかをチェック
+// もし存在すれば、trueを返し、callExternalFunctionの残りの処理を飛ばす
+bool Executor::FPRCLAP_check_sync(
+	ExecutionState &state,
+	KInstruction *kinst,
+	std::vector<ref<Expr>> &args
+){
+	llvm::CallInst *CI = llvm::dyn_cast<llvm::CallInst>(kinst->inst);
+	std::string calle_name = CI->getCalledFunction()->getName();
+	for(std::string s : FPRCLAP_pthread_func_name_list){
+		// 辞書にマッチ
+		if(s == calle_name){
+			if(s == "pthread_create"){
+				FPRCLAP_create_thread(state, kinst, args);
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
+void Executor::FPRCLAP_create_thread(
+	ExecutionState &state,
+	KInstruction *kinst,
+	std::vector<klee::ref<klee::Expr>> &args
+){
+	FPRCLAP_thread_id++;
+	pid_t pid = ::fork(), wpid;
+	int status = 0;
+	if(pid == 0){
+		/** 子プロセス */
+		// エントリーポイントをKLEE上の関数として取得
+		KFunction *kf = kmodule->functionMap[const_cast<Function*>(llvm::dyn_cast<llvm::CallInst>(kinst->inst)->getCalledFunction())];
+
+		// 実行状態の前処理
+		state.pc = kf->instructions; // プログラムカウンタ
+		state.prevPC = state.pc;
+		state.depth = 0; // 分岐の深さをリセット
+		processTree = new PTree(&state);
+		state.ptreeNode = processTree->root;
+		state.constraints.empty(); // パス制約のリセット
+		state.stack.clear(); // 新しい環境の構築
+		state.pushFrame(0, kf);
+		statsTracker = 0;
+		addedStates.clear();
+		removedStates.clear();
+		states.insert(&state);
+
+		// pthread_createで呼ばれた関数の引数
+		bindArgument(kf, 0, state, args[3]);
+
+		// 実行
+		while(!states.empty() && !haltExecution){
+			ExecutionState &state = searcher->selectState();
+			KInstruction *ki = state.pc;
+			stepInstruction(state);
+			executeInstruction(state, ki);
+			updateStates(&state);
+		}
+		// 全ての処理が終わったら、終了。
+		exit(0);
+	}else{
+		/** 親プロセス */
+		while((wpid = ::wait(&status)) > 0);
 	}
 }

@@ -548,10 +548,31 @@ public:
   /// Returns the errno location in memory of the state
   int *getErrnoLocation(const ExecutionState &state) const;
 
-  /**
-    パス成約を吐き出すためのメソッド
-  */
-  void terminate_state_FPRCLAP_with_constraints(ExecutionState &state);
+  /** 
+   * FPR Functions
+   */
+  // パス成約を吐き出すためのメソッド
+  void FPRCLAP_terminate_state(ExecutionState &state);
+
+  const std::vector<std::string> FPRCLAP_pthread_func_name_list{
+    "pthread_create",
+    "pthread_join"
+  };
+
+  // 呼び出された関数が同期処理関係であるかを確認
+  bool FPRCLAP_check_sync(
+    ExecutionState &state,
+    KInstruction *kinst,
+    std::vector<ref<Expr>> &args
+  );
+
+  int FPRCLAP_thread_id = 0;
+
+  void FPRCLAP_create_thread(
+    ExecutionState &state,
+    KInstruction *kinst,
+    std::vector<klee::ref<klee::Expr>> &args
+  );
 };
 
 } // End klee namespace
