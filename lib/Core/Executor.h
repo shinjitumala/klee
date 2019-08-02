@@ -33,6 +33,8 @@
 #include <string>
 #include <vector>
 
+#include "llvm/IR/Metadata.h"
+
 struct KTest;
 
 namespace llvm {
@@ -576,5 +578,12 @@ public:
 };
 
 } // End klee namespace
+
+namespace FPRCLAP {
+  llvm::Function * parent_func(llvm::Value &val, llvm::Module &M);
+  llvm::MDNode *find_mdn(llvm::Value &val, llvm::Function &F);
+  std::string name(llvm::Value &val, llvm::Module &M);
+  std::string scope(llvm::Value &val, llvm::Module &M);
+}
 
 #endif /* KLEE_EXECUTOR_H */

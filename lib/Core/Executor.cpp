@@ -71,6 +71,9 @@
 #include "llvm/Support/Process.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "llvm/IR/DebugInfo.h"
+#include "llvm/IR/Metadata.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cerrno>
@@ -82,6 +85,7 @@
 #include <string>
 #include <sys/mman.h>
 #include <vector>
+#include <iostream>
 
 #include <unistd.h>
 #include <sys/wait.h>
@@ -115,7 +119,7 @@ namespace {
 
 cl::opt<bool> DumpStatesOnHalt(
 	"dump-states-on-halt",
-	cl::init(true),
+	cl::init(false),
 	cl::desc("Dump test cases for all active states on exit (default=true)"),
 	cl::cat(TestGenCat));
 
@@ -180,12 +184,12 @@ cl::opt<ExternalCallPolicy> ExternalCalls(
 		           "All external function calls are allowed.  This concretizes "
 		           "any symbolic arguments in calls to external functions.")
 		KLEE_LLVM_CL_VAL_END),
-	cl::init(ExternalCallPolicy::Concrete),
+	cl::init(ExternalCallPolicy::All),
 	cl::cat(ExtCallsCat));
 
 cl::opt<bool> SuppressExternalWarnings(
 	"suppress-external-warnings",
-	cl::init(false),
+	cl::init(true),
 	cl::desc("Supress warnings about calling external functions."),
 	cl::cat(ExtCallsCat));
 
@@ -934,7 +938,6 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
 		if (replayPath && !isInternal) {
 			assert(replayPosition<replayPath->size() &&
 			       "ran out of branches in replay path mode");
-			printf("FPR: REPLAYING!\n");
 			bool branch = (*replayPath)[replayPosition++];
 
 			if (res==Solver::True) {
@@ -2247,12 +2250,88 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 
 	case Instruction::Load: {
 		ref<Expr> base = eval(ki, 0, state).value;
+		/** 
+		 * FPR：　メモリ読み込みについて制約を生成
+		 */
+		static std::string SP = "_-_";
+		llvm::errs() << "====LoadInst====\n";
+		klee::ResolutionList resl;
+		state.addressSpace.resolve(state, solver, base, resl);
+		for(klee::ResolutionList::iterator itr = resl.begin(); itr != resl.end(); itr++){
+			const klee::MemoryObject *mo = itr->first;
+			// メモリオブジェクトの正しさを検証
+			bool sane_memobj = false;
+			if(llvm::isa<klee::ConstantExpr>(base)){
+				sane_memobj = true;
+			}else if(
+				base->getKind() == klee::Expr::Add &&
+				base->getKid(0) == mo->getBaseExpr()
+			){
+				sane_memobj = true;
+			}
+
+			// メモリオブジェクトが正しい場合
+			if(sane_memobj){
+				llvm::Value *val = ki->inst->getOperand(0);
+
+				std::string name;
+				name += "R";
+				name += SP;
+				name += FPRCLAP::scope(*val, *kmodule->module);
+				name += SP;
+				name += FPRCLAP::name(*val, *kmodule->module);
+				mo->setName(name);
+
+				executeMakeSymbolic(state, mo, name);
+				break;
+			}
+		}
+		llvm::errs() << "================\n";
+		/** */
 		executeMemoryOperation(state, false, base, 0, ki);
 		break;
 	}
 	case Instruction::Store: {
 		ref<Expr> base = eval(ki, 1, state).value;
 		ref<Expr> value = eval(ki, 0, state).value;
+		/**
+		 * FPR: 書き込み命令についての制約を生成
+		 */
+		static std::string SP = "_-_";
+		llvm::errs() << "====StoreInst===\n";
+		klee::ResolutionList resl;
+		state.addressSpace.resolve(state, solver, base, resl);
+		for(klee::ResolutionList::iterator itr = resl.begin(); itr != resl.end(); itr++){
+			const klee::MemoryObject *mo = itr->first;
+			// メモリオブジェクトの正しさを検証
+			bool sane_memobj = false;
+			if(llvm::isa<klee::ConstantExpr>(base)){
+				sane_memobj = true;
+			}else if(
+				base->getKind() == klee::Expr::Add &&
+				base->getKid(0) == mo->getBaseExpr()
+			){
+				sane_memobj = true;
+			}
+
+			// メモリオブジェクトが正しい場合
+			if(sane_memobj){
+				llvm::Value *val = ki->inst->getOperand(1);
+
+				std::string name;
+				name += "R";
+				name += SP;
+				name += FPRCLAP::scope(*val, *kmodule->module);
+				name += SP;
+				name += FPRCLAP::name(*val, *kmodule->module);
+				mo->setName(name);
+
+				executeMakeSymbolic(state, mo, name);
+				break;
+			}
+		}
+		llvm::errs() << "================\n";
+		/** */
 		executeMemoryOperation(state, true, base, value, 0);
 		break;
 	}
@@ -3081,6 +3160,10 @@ void Executor::terminateStateEarly(ExecutionState &state,
 	    (AlwaysOutputSeeds && seedMap.count(&state)))
 		interpreterHandler->processTestCase(state, (message + "\n").str().c_str(),
 		                                    "early");
+
+	// FPR
+	FPRCLAP_terminate_state(state);
+
 	terminateState(state);
 }
 
@@ -3088,10 +3171,11 @@ void Executor::terminateStateOnExit(ExecutionState &state) {
 	if (!OnlyOutputStatesCoveringNew || state.coveredNew ||
 	    (AlwaysOutputSeeds && seedMap.count(&state)))
 		interpreterHandler->processTestCase(state, 0, 0);
-	terminateState(state);
 
-  // FPR
-  FPRCLAP_terminate_state(state);
+	// FPR
+	FPRCLAP_terminate_state(state);
+
+	terminateState(state);
 }
 
 const InstructionInfo & Executor::getLastNonKleeInternalInstruction(const ExecutionState &state,
@@ -4108,7 +4192,7 @@ void Executor::FPRCLAP_terminate_state(ExecutionState &state){
 	for(std::vector<ref<Expr> >::const_iterator cb = state.constraints.begin(),
 	    ce = state.constraints.end(); cb != ce; cb++) {
 		if(Expr *e = dyn_cast<Expr>(*cb)){
-		e->dump();
+			std::cout << e << std::endl;
 		}
 	}
 }
@@ -4127,6 +4211,8 @@ bool Executor::FPRCLAP_check_sync(
 		if(s == calle_name){
 			if(s == "pthread_create"){
 				FPRCLAP_create_thread(state, kinst, args);
+			}else if(s == "pthread_join"){
+				std::cout << "FPRCLAP: S: join"<< std::endl;
 			}
 			return true;
 		}
@@ -4145,37 +4231,199 @@ void Executor::FPRCLAP_create_thread(
 	if(pid == 0){
 		/** 子プロセス */
 		// エントリーポイントをKLEE上の関数として取得
-		KFunction *kf = kmodule->functionMap[const_cast<Function*>(llvm::dyn_cast<llvm::CallInst>(kinst->inst)->getCalledFunction())];
+		// KFunction *kf = kmodule->functionMap[const_cast<Function*>(llvm::dyn_cast<llvm::CallInst>(kinst->inst)->getCalledFunction())]; <- WTF? なぜ動かぬ
+		ref<Expr> expr = args[2];
+		if(ConstantExpr *cexpr = dyn_cast<ConstantExpr>(expr)){
+			for(auto itr = globalAddresses.begin(); itr != globalAddresses.end(); itr++){
+				if(itr->second == cexpr){
+					const GlobalValue *globlyat = itr->first;
+					if(const Function *f = llvm::dyn_cast<llvm::Function>(globlyat)){
+						// 呼び出されている関数を発見
+						KFunction *kf = kmodule->functionMap[const_cast<Function *>(f)];
 
-		// 実行状態の前処理
-		state.pc = kf->instructions; // プログラムカウンタ
-		state.prevPC = state.pc;
-		state.depth = 0; // 分岐の深さをリセット
-		processTree = new PTree(&state);
-		state.ptreeNode = processTree->root;
-		state.constraints.empty(); // パス制約のリセット
-		state.stack.clear(); // 新しい環境の構築
-		state.pushFrame(0, kf);
-		statsTracker = 0;
-		addedStates.clear();
-		removedStates.clear();
-		states.insert(&state);
+						// 実行状態の前処理
+						state.pc = kf->instructions; // プログラムカウンタ
+						state.prevPC = state.pc;
+						state.depth = 0; // 分岐の深さをリセット
+						processTree = new PTree(&state);
+						state.ptreeNode = processTree->root;
+						state.constraints.empty(); // パス制約のリセット
+						state.stack.clear(); // 新しい環境の構築
+						state.pushFrame(0, kf);
+						statsTracker = 0;
+						addedStates.clear();
+						removedStates.clear();
+						states.insert(&state);
 
-		// pthread_createで呼ばれた関数の引数
-		bindArgument(kf, 0, state, args[3]);
+						// pthread_createで呼ばれた関数の引数
+						bindArgument(kf, 0, state, args[3]);
 
-		// 実行
-		while(!states.empty() && !haltExecution){
-			ExecutionState &state = searcher->selectState();
-			KInstruction *ki = state.pc;
-			stepInstruction(state);
-			executeInstruction(state, ki);
-			updateStates(&state);
+						// 実行
+						while(!states.empty() && !haltExecution){
+							ExecutionState &state = searcher->selectState();
+							KInstruction *ki = state.pc;
+							stepInstruction(state);
+							executeInstruction(state, ki);
+							updateStates(&state);
+							for(std::vector<ref<Expr> >::const_iterator cb = state.constraints.begin(),
+								ce = state.constraints.end(); cb != ce; cb++) {
+								if(Expr *e = dyn_cast<Expr>(*cb)){
+									e->dump();
+								}
+							}
+						}
+
+						// 全ての処理が終わったら、終了。
+						exit(0);
+					}else{
+						llvm::errs() << "FPRCLAP: pthread_creates's 2nd argument does not point to a function\n";
+						exit(1);
+					}
+				}
+			}
+			llvm::errs() << "FPRCLAP: pthread_create's 2nd argument points to nothing.\n";
+			exit(1);
+		}else{
+			llvm::errs() << "FPRCLAP: pthread_create's 3rd argument is corrupt.\n";
+			exit(1);
 		}
-		// 全ての処理が終わったら、終了。
-		exit(0);
 	}else{
 		/** 親プロセス */
 		while((wpid = ::wait(&status)) > 0);
+		std::cout << "FPRCLAP: TO: fork T" << FPRCLAP_thread_id << std::endl;
+	}
+}
+
+namespace FPRCLAP {
+	int trace_position = 0;
+	// valが含まれる関数を取得
+	llvm::Function * parent_func(llvm::Value &val, llvm::Module &M){
+		if(llvm::Argument *arg = llvm::dyn_cast<llvm::Argument>(&val)){
+			return arg->getParent();
+		}else if(llvm::Instruction *I = llvm::dyn_cast<llvm::Instruction>(&val)){
+			return I->getParent()->getParent();
+		}else{
+			llvm::errs() << "parent_func: Unknown Val\n";
+			return NULL;
+		}
+	}
+
+	// 関数Fにあるデバグ情報からvalueのMDNodeを取得
+	llvm::MDNode *find_mdn(llvm::Value &value, llvm::Function &F){
+		llvm::Value *val = &value;
+		static std::map<llvm::Value*, llvm::MDNode*> cache;
+		// 既に見つかっている変数なら、そのまま返す
+		auto itr = cache.find(val);
+		if(itr != cache.end()){
+			return itr->second;
+		}
+
+		// 配列型のデータの場合は、データの参照先を見る
+		if(llvm::GetElementPtrInst *I = llvm::dyn_cast<llvm::GetElementPtrInst>(val)){
+			val = I->getPointerOperand();
+		}
+		
+		// デバグ情報の探索
+		llvm::MDNode *mdn = NULL;
+		for(auto &BB : F){
+			for(auto &I : BB){
+				if(llvm::DbgDeclareInst *ddi = llvm::dyn_cast<llvm::DbgDeclareInst>(&I)){
+					if(ddi->getAddress() == val){
+						mdn = ddi->getVariable();
+						break;
+					}
+				}
+			}
+			if(mdn) break;
+		}
+
+		// 探索結果の保存
+		if(mdn){
+			cache.emplace(val, mdn);
+		}
+
+		return mdn;
+	}
+
+	// 変数名の取得
+	std::string name(llvm::Value &val, llvm::Module &M){
+		static std::map<llvm::Value*, std::string> cache;
+		// 既知のデータの場合はそのまま返す
+		auto itr = cache.find(&val);
+		if(itr != cache.end()){
+			return itr->second;
+		}
+
+		std::string ret = "ERR";
+		if(llvm::GlobalValue *gv = llvm::dyn_cast<llvm::GlobalValue>(&val)){
+			// グローバル変数の場合
+			ret = gv->getName();
+		}else{
+			// それ以外の場合
+			llvm::Function *F = FPRCLAP::parent_func(val, M);
+			if(F){
+				llvm::MDNode *mdn = FPRCLAP::find_mdn(val, *F);
+				if(mdn){
+					ret = llvm::dyn_cast<llvm::DIVariable>(mdn)->getName();
+				}
+			}else{
+				ret = val.getName();
+			}
+		}
+		if(ret != "ERR"){
+			cache.emplace(&val, ret);
+		}
+		
+		return ret;
+	}
+
+	// 変数のスコープを取得
+	std::string scope(llvm::Value &val, llvm::Module &M){
+		static std::map<llvm::Value*, std::string> cache;
+		static std::map<llvm::DIScope*, int> scopes;
+		static int scope_id = 0;
+		static std::string GLOBAL("FPR_SCOPE_GLOBAL");
+		static std::string LOCAL("FPR_SCOPE_LOCAL");
+		// 既知のデータの場合はそのまま返す
+		auto itr = cache.find(&val);
+		if(itr != cache.end()){
+			return itr->second;
+		}
+
+		std::string ret = "ERR";
+		if(llvm::isa<llvm::GlobalValue>(&val)){
+			ret = GLOBAL;
+		}else{
+			llvm::Function *F = FPRCLAP::parent_func(val, M);
+			if(F){
+				llvm::MDNode *mdn = FPRCLAP::find_mdn(val, *F);
+				if(mdn){
+					llvm::DIScope *s = llvm::dyn_cast<llvm::DIVariable>(mdn)->getScope();
+					std::string scope = s->getName();
+					// 無名スコープ。つまり、局所変数。
+					if(scope == ""){
+						auto itr = scopes.find(s);
+						if(itr != scopes.end()){
+							ret = LOCAL + std::to_string(itr->second);
+						}else{
+							scopes.emplace(s, scope_id);
+							ret = LOCAL + std::to_string(scope_id);
+							scope_id++;
+						}
+					}else{
+						ret = scope;
+					}
+				}
+			}
+		}
+
+		if(ret != "ERR"){
+			cache.emplace(&val, ret);
+		}
+		return ret;
+	}
+
+	// Load命令で、制約を作る。
+	void load_cnst(klee::ExecutionState &state){
 	}
 }
