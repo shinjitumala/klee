@@ -90,6 +90,169 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
+/**
+ * FPRCLAP: 星野が書いたライブラリ関数。（多分、CLAPを書いたJEFFさんよりもエレガント。）
+ */
+namespace FPRCLAP {
+	// 制約生成のための状態データ
+	int thread_id = 0;
+
+	// 名前管理のための文字列
+	const std::string SP = "---";
+	const std::string PFX = "fprclap_";
+	const std::string SFX = ".const";
+	const std::string path = PFX + "path" + SFX;
+	const std::string so = PFX + "so" + SFX;
+	const std::string rw = PFX + "rw" + SFX;
+	const std::string mo = PFX + "mo" + SFX;
+
+	std::string unfrm(std::string name){
+		std::string ret = name;
+		for(int i = ret.size() - 1; i < 16; i++){
+			ret += "_";
+		}
+		return ret;
+	}
+
+	// valが含まれる関数を取得
+	llvm::Function * parent_func(llvm::Value &val, llvm::Module &M){
+		if(llvm::Argument *arg = llvm::dyn_cast<llvm::Argument>(&val)){
+			return arg->getParent();
+		}else if(llvm::Instruction *I = llvm::dyn_cast<llvm::Instruction>(&val)){
+			return I->getParent()->getParent();
+		}else{
+			llvm::errs() << "parent_func: Unknown Val\n";
+			return NULL;
+		}
+	}
+
+	// 関数Fにあるデバグ情報からvalueのMDNodeを取得
+	llvm::MDNode *find_mdn(llvm::Value &value, llvm::Function &F){
+		llvm::Value *val = &value;
+		static std::map<llvm::Value*, llvm::MDNode*> cache;
+		// 既に見つかっている変数なら、そのまま返す
+		auto itr = cache.find(val);
+		if(itr != cache.end()){
+			return itr->second;
+		}
+
+		// 配列型のデータの場合は、データの参照先を見る
+		if(llvm::GetElementPtrInst *I = llvm::dyn_cast<llvm::GetElementPtrInst>(val)){
+			val = I->getPointerOperand();
+		}
+		
+		// デバグ情報の探索
+		llvm::MDNode *mdn = NULL;
+		for(auto &BB : F){
+			for(auto &I : BB){
+				if(llvm::DbgDeclareInst *ddi = llvm::dyn_cast<llvm::DbgDeclareInst>(&I)){
+					if(ddi->getAddress() == val){
+						mdn = ddi->getVariable();
+						break;
+					}
+				}
+			}
+			if(mdn) break;
+		}
+
+		// 探索結果の保存
+		if(mdn){
+			cache.emplace(val, mdn);
+		}
+
+		return mdn;
+	}
+
+	// 変数名の取得
+	std::string name(llvm::Value &val, llvm::Module &M){
+		static std::map<llvm::Value*, std::string> cache;
+		// 既知のデータの場合はそのまま返す
+		auto itr = cache.find(&val);
+		if(itr != cache.end()){
+			return itr->second;
+		}
+
+		std::string ret = "ERR";
+		if(llvm::GlobalValue *gv = llvm::dyn_cast<llvm::GlobalValue>(&val)){
+			// グローバル変数の場合
+			ret = gv->getName();
+		}else{
+			// それ以外の場合
+			llvm::Function *F = FPRCLAP::parent_func(val, M);
+			if(F){
+				llvm::MDNode *mdn = FPRCLAP::find_mdn(val, *F);
+				if(mdn){
+					ret = llvm::dyn_cast<llvm::DIVariable>(mdn)->getName();
+				}
+			}else{
+				ret = val.getName();
+			}
+		}
+
+		ret = FPRCLAP::unfrm(ret);
+		if(ret != "ERR"){
+			cache.emplace(&val, ret);
+		}
+		
+		return ret;
+	}
+
+	// 変数のスコープを取得
+	std::string scope(llvm::Value &val, llvm::Module &M){
+		static std::map<llvm::Value*, std::string> cache;
+		static std::map<llvm::DIScope*, int> scopes;
+		static int scope_id = 0;
+		static std::string GLOBAL("GLOBAL");
+		static std::string LOCAL("LOCAL");
+		// 既知のデータの場合はそのまま返す
+		auto itr = cache.find(&val);
+		if(itr != cache.end()){
+			return itr->second;
+		}
+
+		std::string ret = "ERR";
+		if(llvm::isa<llvm::GlobalValue>(&val)){
+			ret = GLOBAL;
+		}else{
+			llvm::Function *F = FPRCLAP::parent_func(val, M);
+			if(F){
+				llvm::MDNode *mdn = FPRCLAP::find_mdn(val, *F);
+				if(mdn){
+					llvm::DIScope *s = llvm::dyn_cast<llvm::DIVariable>(mdn)->getScope();
+					std::string scope = s->getName();
+					// 無名スコープ。つまり、局所変数。
+					if(scope == ""){
+						auto itr = scopes.find(s);
+						if(itr != scopes.end()){
+							ret = LOCAL + std::to_string(itr->second);
+						}else{
+							scopes.emplace(s, scope_id);
+							ret = LOCAL + std::to_string(scope_id);
+							scope_id++;
+						}
+					}else{
+						ret = scope;
+					}
+				}
+			}
+		}
+
+		ret = FPRCLAP::unfrm(ret);
+		if(ret != "ERR"){
+			cache.emplace(&val, ret);
+		}
+		return ret;
+	}
+
+	std::string nrmlz(std::string name){
+		std::string ret = name;
+		for(int i = ret.size() - 1; i < 4; i++){
+			ret.insert(0, 1, '0');
+		}
+		return ret;
+	}
+}
+
 using namespace llvm;
 using namespace klee;
 
@@ -2253,8 +2416,6 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 		/** 
 		 * FPR：　メモリ読み込みについて制約を生成
 		 */
-		static std::string SP = "_-_";
-		llvm::errs() << "====LoadInst====\n";
 		klee::ResolutionList resl;
 		state.addressSpace.resolve(state, solver, base, resl);
 		for(klee::ResolutionList::iterator itr = resl.begin(); itr != resl.end(); itr++){
@@ -2273,20 +2434,39 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 			// メモリオブジェクトが正しい場合
 			if(sane_memobj){
 				llvm::Value *val = ki->inst->getOperand(0);
+				llvm::DebugLoc di = ki->inst->getDebugLoc();
+				if(!di){
+					break;
+				}
 
 				std::string name;
 				name += "R";
-				name += SP;
+				name += FPRCLAP::SP;
 				name += FPRCLAP::scope(*val, *kmodule->module);
-				name += SP;
+				name += FPRCLAP::SP;
 				name += FPRCLAP::name(*val, *kmodule->module);
+				name += FPRCLAP::SP;
+				name += FPRCLAP::nrmlz(std::to_string(di.getLine()));
+				name += ":";
+				name += FPRCLAP::nrmlz(std::to_string(di.getCol()));
 				mo->setName(name);
 
 				executeMakeSymbolic(state, mo, name);
+
+				// パス制約
+				llvm::raw_ostream &os = interpreterHandler->fprclap_rw();
+				os << name << "\n";
+				os.flush();
+
+				// メモリ順序制約
+				llvm::raw_ostream &mo = interpreterHandler->fprclap_mo();
+				name[0] = 'O';
+				name.insert(0, "T" + std::to_string(FPRCLAP::thread_id) + ": ");
+				mo << name << "\n";
+				mo.flush();
 				break;
 			}
 		}
-		llvm::errs() << "================\n";
 		/** */
 		executeMemoryOperation(state, false, base, 0, ki);
 		break;
@@ -2297,8 +2477,6 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 		/**
 		 * FPR: 書き込み命令についての制約を生成
 		 */
-		static std::string SP = "_-_";
-		llvm::errs() << "====StoreInst===\n";
 		klee::ResolutionList resl;
 		state.addressSpace.resolve(state, solver, base, resl);
 		for(klee::ResolutionList::iterator itr = resl.begin(); itr != resl.end(); itr++){
@@ -2317,20 +2495,39 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 			// メモリオブジェクトが正しい場合
 			if(sane_memobj){
 				llvm::Value *val = ki->inst->getOperand(1);
+				llvm::DebugLoc di = ki->inst->getDebugLoc();
+				if(!di){
+					break;
+				}
 
 				std::string name;
-				name += "R";
-				name += SP;
+				name += "W";
+				name += FPRCLAP::SP;
 				name += FPRCLAP::scope(*val, *kmodule->module);
-				name += SP;
+				name += FPRCLAP::SP;
 				name += FPRCLAP::name(*val, *kmodule->module);
+				name += FPRCLAP::SP;
+				name += FPRCLAP::nrmlz(std::to_string(di.getLine()));
+				name += ":";
+				name += FPRCLAP::nrmlz(std::to_string(di.getCol()));
 				mo->setName(name);
 
 				executeMakeSymbolic(state, mo, name);
+
+				// パス制約
+				llvm::raw_ostream &os = interpreterHandler->fprclap_rw();
+				os << name << "\n";
+				os.flush();
+
+				// メモリ順序制約
+				llvm::raw_ostream &mo = interpreterHandler->fprclap_mo();
+				name[0] = 'O';
+				name.insert(0, "T" + std::to_string(FPRCLAP::thread_id) + ": ");
+				mo << name << "\n";
+				mo.flush();
 				break;
 			}
 		}
-		llvm::errs() << "================\n";
 		/** */
 		executeMemoryOperation(state, true, base, value, 0);
 		break;
@@ -4189,12 +4386,16 @@ Interpreter *Interpreter::create(LLVMContext &ctx, const InterpreterOptions &opt
  */
 // 終了時に制約を出力
 void Executor::FPRCLAP_terminate_state(ExecutionState &state){
+	llvm::errs() << "FPRCLAP: state terminated.\n";
+	llvm::raw_ostream &os = interpreterHandler->fprclap_path();
 	for(std::vector<ref<Expr> >::const_iterator cb = state.constraints.begin(),
 	    ce = state.constraints.end(); cb != ce; cb++) {
 		if(Expr *e = dyn_cast<Expr>(*cb)){
-			std::cout << e << std::endl;
+			e->print(os);
+			os << "\n";
 		}
 	}
+	os.flush();
 }
 
 // FPRCLAPが注目したい関数呼び出しがあるかをチェック
@@ -4230,6 +4431,7 @@ void Executor::FPRCLAP_create_thread(
 	int status = 0;
 	if(pid == 0){
 		/** 子プロセス */
+		FPRCLAP::thread_id = FPRCLAP_thread_id;
 		// エントリーポイントをKLEE上の関数として取得
 		// KFunction *kf = kmodule->functionMap[const_cast<Function*>(llvm::dyn_cast<llvm::CallInst>(kinst->inst)->getCalledFunction())]; <- WTF? なぜ動かぬ
 		ref<Expr> expr = args[2];
@@ -4265,12 +4467,6 @@ void Executor::FPRCLAP_create_thread(
 							stepInstruction(state);
 							executeInstruction(state, ki);
 							updateStates(&state);
-							for(std::vector<ref<Expr> >::const_iterator cb = state.constraints.begin(),
-								ce = state.constraints.end(); cb != ce; cb++) {
-								if(Expr *e = dyn_cast<Expr>(*cb)){
-									e->dump();
-								}
-							}
 						}
 
 						// 全ての処理が終わったら、終了。
@@ -4291,139 +4487,5 @@ void Executor::FPRCLAP_create_thread(
 		/** 親プロセス */
 		while((wpid = ::wait(&status)) > 0);
 		std::cout << "FPRCLAP: TO: fork T" << FPRCLAP_thread_id << std::endl;
-	}
-}
-
-namespace FPRCLAP {
-	int trace_position = 0;
-	// valが含まれる関数を取得
-	llvm::Function * parent_func(llvm::Value &val, llvm::Module &M){
-		if(llvm::Argument *arg = llvm::dyn_cast<llvm::Argument>(&val)){
-			return arg->getParent();
-		}else if(llvm::Instruction *I = llvm::dyn_cast<llvm::Instruction>(&val)){
-			return I->getParent()->getParent();
-		}else{
-			llvm::errs() << "parent_func: Unknown Val\n";
-			return NULL;
-		}
-	}
-
-	// 関数Fにあるデバグ情報からvalueのMDNodeを取得
-	llvm::MDNode *find_mdn(llvm::Value &value, llvm::Function &F){
-		llvm::Value *val = &value;
-		static std::map<llvm::Value*, llvm::MDNode*> cache;
-		// 既に見つかっている変数なら、そのまま返す
-		auto itr = cache.find(val);
-		if(itr != cache.end()){
-			return itr->second;
-		}
-
-		// 配列型のデータの場合は、データの参照先を見る
-		if(llvm::GetElementPtrInst *I = llvm::dyn_cast<llvm::GetElementPtrInst>(val)){
-			val = I->getPointerOperand();
-		}
-		
-		// デバグ情報の探索
-		llvm::MDNode *mdn = NULL;
-		for(auto &BB : F){
-			for(auto &I : BB){
-				if(llvm::DbgDeclareInst *ddi = llvm::dyn_cast<llvm::DbgDeclareInst>(&I)){
-					if(ddi->getAddress() == val){
-						mdn = ddi->getVariable();
-						break;
-					}
-				}
-			}
-			if(mdn) break;
-		}
-
-		// 探索結果の保存
-		if(mdn){
-			cache.emplace(val, mdn);
-		}
-
-		return mdn;
-	}
-
-	// 変数名の取得
-	std::string name(llvm::Value &val, llvm::Module &M){
-		static std::map<llvm::Value*, std::string> cache;
-		// 既知のデータの場合はそのまま返す
-		auto itr = cache.find(&val);
-		if(itr != cache.end()){
-			return itr->second;
-		}
-
-		std::string ret = "ERR";
-		if(llvm::GlobalValue *gv = llvm::dyn_cast<llvm::GlobalValue>(&val)){
-			// グローバル変数の場合
-			ret = gv->getName();
-		}else{
-			// それ以外の場合
-			llvm::Function *F = FPRCLAP::parent_func(val, M);
-			if(F){
-				llvm::MDNode *mdn = FPRCLAP::find_mdn(val, *F);
-				if(mdn){
-					ret = llvm::dyn_cast<llvm::DIVariable>(mdn)->getName();
-				}
-			}else{
-				ret = val.getName();
-			}
-		}
-		if(ret != "ERR"){
-			cache.emplace(&val, ret);
-		}
-		
-		return ret;
-	}
-
-	// 変数のスコープを取得
-	std::string scope(llvm::Value &val, llvm::Module &M){
-		static std::map<llvm::Value*, std::string> cache;
-		static std::map<llvm::DIScope*, int> scopes;
-		static int scope_id = 0;
-		static std::string GLOBAL("FPR_SCOPE_GLOBAL");
-		static std::string LOCAL("FPR_SCOPE_LOCAL");
-		// 既知のデータの場合はそのまま返す
-		auto itr = cache.find(&val);
-		if(itr != cache.end()){
-			return itr->second;
-		}
-
-		std::string ret = "ERR";
-		if(llvm::isa<llvm::GlobalValue>(&val)){
-			ret = GLOBAL;
-		}else{
-			llvm::Function *F = FPRCLAP::parent_func(val, M);
-			if(F){
-				llvm::MDNode *mdn = FPRCLAP::find_mdn(val, *F);
-				if(mdn){
-					llvm::DIScope *s = llvm::dyn_cast<llvm::DIVariable>(mdn)->getScope();
-					std::string scope = s->getName();
-					// 無名スコープ。つまり、局所変数。
-					if(scope == ""){
-						auto itr = scopes.find(s);
-						if(itr != scopes.end()){
-							ret = LOCAL + std::to_string(itr->second);
-						}else{
-							scopes.emplace(s, scope_id);
-							ret = LOCAL + std::to_string(scope_id);
-							scope_id++;
-						}
-					}else{
-						ret = scope;
-					}
-				}
-			}
-		}
-
-		if(ret != "ERR"){
-			cache.emplace(&val, ret);
-		}
-		return ret;
-	}
-
-	// Load命令で、制約を作る。
-	void load_cnst(klee::ExecutionState &state){
 	}
 }
