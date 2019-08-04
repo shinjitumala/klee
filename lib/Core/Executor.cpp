@@ -51,6 +51,7 @@
 #include "klee/util/ExprSMTLIBPrinter.h"
 #include "klee/util/ExprUtil.h"
 #include "klee/util/GetElementPtrTypeIterator.h"
+#include "klee/SolverImpl.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringExtras.h"
@@ -98,7 +99,7 @@ namespace FPRCLAP {
 	int thread_id = 0;
 
 	// 名前管理のための文字列
-	const std::string SP = "---";
+	const std::string SP = "_";
 	const std::string PFX = "fprclap_";
 	const std::string SFX = ".const";
 	const std::string path = PFX + "path" + SFX;
@@ -108,7 +109,7 @@ namespace FPRCLAP {
 
 	std::string unfrm(std::string name){
 		std::string ret = name;
-		for(int i = ret.size() - 1; i < 16; i++){
+		for(int i = ret.size(); i < 8; i++){
 			ret += "_";
 		}
 		return ret;
@@ -139,6 +140,10 @@ namespace FPRCLAP {
 		// 配列型のデータの場合は、データの参照先を見る
 		if(llvm::GetElementPtrInst *I = llvm::dyn_cast<llvm::GetElementPtrInst>(val)){
 			val = I->getPointerOperand();
+		}
+		// load命令の場合は、ロード先のアドレスが変数のアドレス
+		if(llvm::LoadInst *I = llvm::dyn_cast<llvm::LoadInst>(val)){
+			val = I->getOperand(0);
 		}
 		
 		// デバグ情報の探索
@@ -246,7 +251,7 @@ namespace FPRCLAP {
 
 	std::string nrmlz(std::string name){
 		std::string ret = name;
-		for(int i = ret.size() - 1; i < 4; i++){
+		for(int i = ret.size(); i < 2; i++){
 			ret.insert(0, 1, '0');
 		}
 		return ret;
@@ -1777,7 +1782,6 @@ Function* Executor::getTargetFunction(Value *calledVal, ExecutionState &state) {
 
 void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 	Instruction *i = ki->inst;
-	llvm::errs() << *i << "\n";
 	switch (i->getOpcode()) {
 	// Control flow
 	case Instruction::Ret: {
@@ -2447,7 +2451,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 				name += FPRCLAP::name(*val, *kmodule->module);
 				name += FPRCLAP::SP;
 				name += FPRCLAP::nrmlz(std::to_string(di.getLine()));
-				name += ":";
+				name += FPRCLAP::SP;
 				name += FPRCLAP::nrmlz(std::to_string(di.getCol()));
 				mo->setName(name);
 
@@ -2461,7 +2465,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 				// メモリ順序制約
 				llvm::raw_ostream &mo = interpreterHandler->fprclap_mo();
 				name[0] = 'O';
-				name.insert(0, "T" + std::to_string(FPRCLAP::thread_id) + ": ");
+				name.insert(0, std::to_string(FPRCLAP::thread_id) + " ");
 				mo << name << "\n";
 				mo.flush();
 				break;
@@ -2508,7 +2512,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 				name += FPRCLAP::name(*val, *kmodule->module);
 				name += FPRCLAP::SP;
 				name += FPRCLAP::nrmlz(std::to_string(di.getLine()));
-				name += ":";
+				name += FPRCLAP::SP;
 				name += FPRCLAP::nrmlz(std::to_string(di.getCol()));
 				mo->setName(name);
 
@@ -2522,7 +2526,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 				// メモリ順序制約
 				llvm::raw_ostream &mo = interpreterHandler->fprclap_mo();
 				name[0] = 'O';
-				name.insert(0, "T" + std::to_string(FPRCLAP::thread_id) + ": ");
+				name.insert(0, std::to_string(FPRCLAP::thread_id) + " ");
 				mo << name << "\n";
 				mo.flush();
 				break;
@@ -4391,8 +4395,12 @@ void Executor::FPRCLAP_terminate_state(ExecutionState &state){
 	for(std::vector<ref<Expr> >::const_iterator cb = state.constraints.begin(),
 	    ce = state.constraints.end(); cb != ce; cb++) {
 		if(Expr *e = dyn_cast<Expr>(*cb)){
+			bool res;
+			klee::Query q(state.constraints, e);
+			solver->solver->impl->computeTruth(q, res);
 			e->print(os);
 			os << "\n";
+			break;
 		}
 	}
 	os.flush();
@@ -4405,15 +4413,26 @@ bool Executor::FPRCLAP_check_sync(
 	KInstruction *kinst,
 	std::vector<ref<Expr>> &args
 ){
+	static std::map<std::string, int> thread_data;
 	llvm::CallInst *CI = llvm::dyn_cast<llvm::CallInst>(kinst->inst);
 	std::string calle_name = CI->getCalledFunction()->getName();
+	std::string thread_name = FPRCLAP::name(*CI->getOperand(0), *kmodule->module);
 	for(std::string s : FPRCLAP_pthread_func_name_list){
 		// 辞書にマッチ
 		if(s == calle_name){
 			if(s == "pthread_create"){
+				FPRCLAP_thread_id++;
 				FPRCLAP_create_thread(state, kinst, args);
+				thread_data.emplace(thread_name, FPRCLAP_thread_id);
 			}else if(s == "pthread_join"){
-				std::cout << "FPRCLAP: S: join"<< std::endl;
+				llvm::raw_ostream &os = interpreterHandler->fprclap_so();
+				auto find = thread_data.find(thread_name);
+				int thread_id = -1;
+				if(find != thread_data.end()){
+					thread_id = find->second;
+				}
+				os << "0 <- " << thread_id << "\n";
+				os.flush();
 			}
 			return true;
 		}
@@ -4426,7 +4445,6 @@ void Executor::FPRCLAP_create_thread(
 	KInstruction *kinst,
 	std::vector<klee::ref<klee::Expr>> &args
 ){
-	FPRCLAP_thread_id++;
 	pid_t pid = ::fork(), wpid;
 	int status = 0;
 	if(pid == 0){
@@ -4486,6 +4504,9 @@ void Executor::FPRCLAP_create_thread(
 	}else{
 		/** 親プロセス */
 		while((wpid = ::wait(&status)) > 0);
-		std::cout << "FPRCLAP: TO: fork T" << FPRCLAP_thread_id << std::endl;
+
+		llvm::raw_ostream &os = interpreterHandler->fprclap_so();
+		os << "0 -> " << FPRCLAP_thread_id << "\n";
+		os.flush();
 	}
 }

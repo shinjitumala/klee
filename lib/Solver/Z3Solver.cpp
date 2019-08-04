@@ -22,6 +22,8 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <iostream>
+
 namespace {
 // NOTE: Very useful for debugging Z3 behaviour. These files can be given to
 // the z3 binary to replay all Z3 API calls using its `-log` option.
@@ -297,6 +299,8 @@ bool Z3SolverImpl::internalRunSolver(
     *dumpedQueriesFile << "; end Z3 query\n\n";
     dumpedQueriesFile->flush();
   }
+
+  std::cout << Z3_solver_to_string(builder->ctx, theSolver) << std::endl;
 
   ::Z3_lbool satisfiable = Z3_solver_check(builder->ctx, theSolver);
   runStatusCode = handleSolverResponse(theSolver, satisfiable, objects, values,
