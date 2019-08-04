@@ -141,9 +141,8 @@ std::unique_ptr<llvm::raw_ostream> m_infoFile;
 
 // FPR: 出力用のostream
 std::unique_ptr<llvm::raw_ostream> fprclap_path_os;
-std::unique_ptr<llvm::raw_ostream> fprclap_so_os;
 std::unique_ptr<llvm::raw_ostream> fprclap_rw_os;
-std::unique_ptr<llvm::raw_ostream> fprclap_mo_os;
+std::unique_ptr<llvm::raw_ostream> fprclap_o_os;
 
 SmallString<128> m_outputDirectory;
 
@@ -165,9 +164,8 @@ llvm::raw_ostream &getInfoStream() const {
 
 // FPR: 開かれているostreamの取得
 llvm::raw_ostream &fprclap_path() const {return *fprclap_path_os;}
-llvm::raw_ostream &fprclap_so() const {return *fprclap_so_os;}
 llvm::raw_ostream &fprclap_rw() const {return *fprclap_rw_os;}
-llvm::raw_ostream &fprclap_mo() const {return *fprclap_mo_os;}
+llvm::raw_ostream &fprclap_o() const {return *fprclap_o_os;}
 
 /// Returns the number of test cases successfully generated so far
 unsigned getNumTestCases() {
@@ -280,9 +278,8 @@ KleeHandler::KleeHandler(int argc, char **argv)
 
 	// FPR
 	fprclap_path_os = openOutputFile("fprclap_path.const");
-	fprclap_so_os = openOutputFile("fprclap_so.const");
 	fprclap_rw_os = openOutputFile("fprclap_rw.const");
-	fprclap_mo_os = openOutputFile("fprclap_mo.const");
+	fprclap_o_os = openOutputFile("fprclap_o.const");
 }
 
 /**

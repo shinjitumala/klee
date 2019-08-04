@@ -39,9 +39,8 @@ public:
 
   // FPR: 開かれているostreamの取得
   virtual llvm::raw_ostream &fprclap_path() const = 0;
-  virtual llvm::raw_ostream &fprclap_so() const = 0;
+  virtual llvm::raw_ostream &fprclap_o() const = 0;
   virtual llvm::raw_ostream &fprclap_rw() const = 0;
-  virtual llvm::raw_ostream &fprclap_mo() const = 0;
 
   virtual std::string getOutputFilename(const std::string &filename) = 0;
   virtual std::unique_ptr<llvm::raw_fd_ostream> openOutputFile(const std::string &filename) = 0;

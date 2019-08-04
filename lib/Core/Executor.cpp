@@ -2463,7 +2463,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 				os.flush();
 
 				// メモリ順序制約
-				llvm::raw_ostream &mo = interpreterHandler->fprclap_mo();
+				llvm::raw_ostream &mo = interpreterHandler->fprclap_o();
 				name[0] = 'O';
 				name.insert(0, std::to_string(FPRCLAP::thread_id) + " ");
 				mo << name << "\n";
@@ -2524,7 +2524,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 				os.flush();
 
 				// メモリ順序制約
-				llvm::raw_ostream &mo = interpreterHandler->fprclap_mo();
+				llvm::raw_ostream &mo = interpreterHandler->fprclap_o();
 				name[0] = 'O';
 				name.insert(0, std::to_string(FPRCLAP::thread_id) + " ");
 				mo << name << "\n";
@@ -4400,7 +4400,6 @@ void Executor::FPRCLAP_terminate_state(ExecutionState &state){
 			solver->solver->impl->computeTruth(q, res);
 			e->print(os);
 			os << "\n";
-			break;
 		}
 	}
 	os.flush();
@@ -4422,10 +4421,13 @@ bool Executor::FPRCLAP_check_sync(
 		if(s == calle_name){
 			if(s == "pthread_create"){
 				FPRCLAP_thread_id++;
+				llvm::raw_ostream &os = interpreterHandler->fprclap_o();
+				os << "0 -> " << FPRCLAP_thread_id << "\n";
+				os.flush();
 				FPRCLAP_create_thread(state, kinst, args);
 				thread_data.emplace(thread_name, FPRCLAP_thread_id);
 			}else if(s == "pthread_join"){
-				llvm::raw_ostream &os = interpreterHandler->fprclap_so();
+				llvm::raw_ostream &os = interpreterHandler->fprclap_o();
 				auto find = thread_data.find(thread_name);
 				int thread_id = -1;
 				if(find != thread_data.end()){
@@ -4504,9 +4506,5 @@ void Executor::FPRCLAP_create_thread(
 	}else{
 		/** 親プロセス */
 		while((wpid = ::wait(&status)) > 0);
-
-		llvm::raw_ostream &os = interpreterHandler->fprclap_so();
-		os << "0 -> " << FPRCLAP_thread_id << "\n";
-		os.flush();
 	}
 }
