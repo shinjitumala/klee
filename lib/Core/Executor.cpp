@@ -4395,9 +4395,7 @@ void Executor::FPRCLAP_terminate_state(ExecutionState &state){
 	for(std::vector<ref<Expr> >::const_iterator cb = state.constraints.begin(),
 	    ce = state.constraints.end(); cb != ce; cb++) {
 		if(Expr *e = dyn_cast<Expr>(*cb)){
-			bool res;
 			klee::Query q(state.constraints, e);
-			solver->solver->impl->computeTruth(q, res);
 			e->print(os);
 			os << "\n";
 		}
@@ -4422,7 +4420,7 @@ bool Executor::FPRCLAP_check_sync(
 			if(s == "pthread_create"){
 				FPRCLAP_thread_id++;
 				llvm::raw_ostream &os = interpreterHandler->fprclap_o();
-				os << "0 -> " << FPRCLAP_thread_id << "\n";
+				os << FPRCLAP::thread_id << " -> " << FPRCLAP_thread_id << "\n";
 				os.flush();
 				FPRCLAP_create_thread(state, kinst, args);
 				thread_data.emplace(thread_name, FPRCLAP_thread_id);
@@ -4433,7 +4431,7 @@ bool Executor::FPRCLAP_check_sync(
 				if(find != thread_data.end()){
 					thread_id = find->second;
 				}
-				os << "0 <- " << thread_id << "\n";
+				os << FPRCLAP::thread_id << " <- " << thread_id << "\n";
 				os.flush();
 			}
 			return true;
@@ -4462,6 +4460,29 @@ void Executor::FPRCLAP_create_thread(
 					if(const Function *f = llvm::dyn_cast<llvm::Function>(globlyat)){
 						// 呼び出されている関数を発見
 						KFunction *kf = kmodule->functionMap[const_cast<Function *>(f)];
+
+						// .pathファイルの再ロード
+						std::vector<bool> replay_path;
+						std::string path = interpreterHandler->replay_file;
+						for(int i = path.length() - 1;; i--){
+							if(path[i] != '-'){
+								path.pop_back();
+							}else{
+								break;
+							}
+						}
+						path.append(std::to_string(FPRCLAP::thread_id) + ".path");
+						std::ifstream ifs_replay(path, std::ios::in | std::ios::binary);
+						if(!ifs_replay.good()){
+							llvm::errs() << "FPRCLAP: WARNING: Missing replay file: " << path << "\n";
+						}
+						while(ifs_replay.good()){
+							unsigned val;
+							ifs_replay >> val;
+							replay_path.push_back(!!val);
+							ifs_replay.get();
+						}
+						setReplayPath(&replay_path);
 
 						// 実行状態の前処理
 						state.pc = kf->instructions; // プログラムカウンタ

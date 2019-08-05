@@ -42,6 +42,9 @@ public:
   virtual llvm::raw_ostream &fprclap_o() const = 0;
   virtual llvm::raw_ostream &fprclap_rw() const = 0;
 
+  // FPR: リプレイファイル
+  std::string replay_file;
+
   virtual std::string getOutputFilename(const std::string &filename) = 0;
   virtual std::unique_ptr<llvm::raw_fd_ostream> openOutputFile(const std::string &filename) = 0;
 

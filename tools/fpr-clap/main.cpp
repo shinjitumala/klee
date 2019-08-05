@@ -332,7 +332,7 @@ void KleeHandler::loadPathFile(std::string name,
 	std::ifstream f(name.c_str(), std::ios::in | std::ios::binary);
 
 	if (!f.good())
-		assert(0 && "unable to open path file");
+		llvm::errs() << "FPRCLAP: WARNING: Missing replay file: " << name << "\n";
 
 	while (f.good()) {
 		unsigned value;
@@ -676,6 +676,8 @@ int main(int argc, char **argv, char **envp) {
 	Interpreter *interpreter =
 		theInterpreter = Interpreter::create(ctx, IOpts, handler);
 	assert(interpreter);
+	// FPR パスファイルの場所をExecutorに持たせる
+	handler->replay_file = ReplayPathFile;
 	handler->setInterpreter(interpreter);
 
 	for (int i=0; i<argc; i++) {

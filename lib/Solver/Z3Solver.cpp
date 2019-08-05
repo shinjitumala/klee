@@ -300,8 +300,6 @@ bool Z3SolverImpl::internalRunSolver(
     dumpedQueriesFile->flush();
   }
 
-  std::cout << Z3_solver_to_string(builder->ctx, theSolver) << std::endl;
-
   ::Z3_lbool satisfiable = Z3_solver_check(builder->ctx, theSolver);
   runStatusCode = handleSolverResponse(theSolver, satisfiable, objects, values,
                                        hasSolution);
