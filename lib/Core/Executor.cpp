@@ -122,7 +122,6 @@ namespace FPRCLAP {
 		}else if(llvm::Instruction *I = llvm::dyn_cast<llvm::Instruction>(&val)){
 			return I->getParent()->getParent();
 		}else{
-			llvm::errs() << "parent_func: Unknown Val\n";
 			return NULL;
 		}
 	}
@@ -2457,7 +2456,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 
 				executeMakeSymbolic(state, mo, name);
 
-				// パス制約
+				// パス制約記号
 				llvm::raw_ostream &os = interpreterHandler->fprclap_rw();
 				os << name << "\n";
 				os.flush();
@@ -2518,10 +2517,18 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 
 				executeMakeSymbolic(state, mo, name);
 
-				// パス制約
+				// パス制約記号
 				llvm::raw_ostream &os = interpreterHandler->fprclap_rw();
 				os << name << "\n";
 				os.flush();
+
+				// パス制約
+				llvm::raw_ostream &os2 = interpreterHandler->fprclap_path();
+				os2 << "(Eq " << name << "\n" << "     ";
+				os2.flush();
+				value->print(os2);
+				os2 << ")\n";
+				os2.flush();
 
 				// メモリ順序制約
 				llvm::raw_ostream &mo = interpreterHandler->fprclap_o();
@@ -4390,7 +4397,6 @@ Interpreter *Interpreter::create(LLVMContext &ctx, const InterpreterOptions &opt
  */
 // 終了時に制約を出力
 void Executor::FPRCLAP_terminate_state(ExecutionState &state){
-	llvm::errs() << "FPRCLAP: state terminated.\n";
 	llvm::raw_ostream &os = interpreterHandler->fprclap_path();
 	for(std::vector<ref<Expr> >::const_iterator cb = state.constraints.begin(),
 	    ce = state.constraints.end(); cb != ce; cb++) {

@@ -261,7 +261,7 @@ KleeHandler::KleeHandler(int argc, char **argv)
 			klee_error("cannot create output directory: index out of range");
 	}
 
-	klee_message("output directory is \"%s\"", m_outputDirectory.c_str());
+	// klee_message("output directory is \"%s\"", m_outputDirectory.c_str());
 
 	// open warnings.txt
 	std::string file_path = getOutputFilename("warnings.txt");
@@ -489,6 +489,10 @@ static const char *dontCareExternals[] = {
 	"ldexp",
 	"__isnan",
 	"__signbit",
+
+	// FPR suppress warnings
+	"pthread_create",
+	"pthread_join",
 };
 
 // Symbols we consider unsafe

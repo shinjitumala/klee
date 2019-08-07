@@ -25,7 +25,12 @@ klee_open_output_file(const std::string &path, std::string &error) {
   error = "";
   std::unique_ptr<llvm::raw_fd_ostream> f;
   std::error_code ec;
-  f = std::unique_ptr<llvm::raw_fd_ostream>(new llvm::raw_fd_ostream(path.c_str(), ec, llvm::sys::fs::F_None)); // FIXME C++14
+  // FPR: 邪魔ファイルは勝手に、/dev/nullに書き出していれば良い。
+  if(path.find("fprclap_") == std::string::npos){
+    f = std::unique_ptr<llvm::raw_fd_ostream>(new llvm::raw_fd_ostream("/dev/null", ec, llvm::sys::fs::F_None)); // FIXME C++14
+  }else{
+    f = std::unique_ptr<llvm::raw_fd_ostream>(new llvm::raw_fd_ostream(path.c_str(), ec, llvm::sys::fs::F_None)); // FIXME C++14
+  }
   if (ec)
     error = ec.message();
   if (!error.empty()) {

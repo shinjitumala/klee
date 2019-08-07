@@ -41,7 +41,7 @@ Solver *createCoreSolver(CoreSolverType cst) {
     return createDummySolver();
   case Z3_SOLVER:
 #ifdef ENABLE_Z3
-    klee_message("Using Z3 solver backend");
+    // klee_message("Using Z3 solver backend");
     return new Z3Solver();
 #else
     klee_message("Not compiled with Z3 support");
