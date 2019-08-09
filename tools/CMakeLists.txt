@@ -13,4 +13,4 @@
 #add_subdirectory(klee-replay)
 #add_subdirectory(klee-stats)
 #add_subdirectory(ktest-tool)
-add_subdirectory(fpr-clap)
+add_subdirectory(fprclap)
